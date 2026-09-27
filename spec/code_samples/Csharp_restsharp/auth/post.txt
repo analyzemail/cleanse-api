@@ -1,5 +1,0 @@
-var client = new RestClient("https://analyzemail.com/api/v1/auth");
-var request = new RestRequest(Method.POST);
-request.AddHeader("content-type", "application/json");
-request.AddParameter("application/json", "{\"email\":\"<ADD STRING VALUE>\",\"password\":\"<ADD STRING VALUE>\"}", ParameterType.RequestBody);
-IRestResponse response = client.Execute(request);

@@ -1,4 +1,0 @@
-HttpResponse<String> response = Unirest.post("https://analyzemail.com/api/v1/auth")
-  .header("content-type", "application/json")
-  .body("{\"email\":\"<ADD STRING VALUE>\",\"password\":\"<ADD STRING VALUE>\"}")
-  .asString();

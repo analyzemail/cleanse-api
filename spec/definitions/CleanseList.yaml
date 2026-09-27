@@ -1,8 +1,0 @@
-example:
-  message: List "test-list-cleanse3.txt" has been sent for cleanse successfully.
-type: object
-properties:
-  message:
-    type: string
-required:
-- message

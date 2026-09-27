@@ -1,4 +1,0 @@
-var client = new RestClient("https://analyzemail.com/api/v1/list/%7Blist_id%7D?username=SOME_STRING_VALUE");
-var request = new RestRequest(Method.DELETE);
-request.AddHeader("content-type", "application/json");
-IRestResponse response = client.Execute(request);

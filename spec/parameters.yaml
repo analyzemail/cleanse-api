@@ -1,5 +1,0 @@
-username:
-  in: query
-  name: username
-  required: true
-  type: string

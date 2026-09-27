@@ -1,0 +1,1297 @@
+openapi: 3.1.0
+info:
+  title: Analyzemail API
+  version: 2.0.0
+  summary: Real-time email verification, list cleansing and results.
+  description: |
+    The Analyzemail API verifies single addresses in real time, cleanses whole
+    email lists (syntax, DNS, MX, SMTP mailbox probing and risk detection) and
+    returns per-address results you can download.
+
+    ## Quick start
+
+    1. **Create an API key** in the dashboard under
+       [Settings > API](https://analyzemail.com/account/settings/api). The key
+       is shown once; store it somewhere safe.
+    2. **Verify one address** with `POST /verify`:
+
+       ```
+       curl -X POST https://analyzemail.com/api/v2/verify \
+         -H "X-API-Key: am_live_..." \
+         -H "Content-Type: application/json" \
+         -d '{"email": "jane@example.com"}'
+       ```
+
+    3. **Cleanse a list.** Upload it with `POST /lists` (multipart, field
+       `file`), start a job with `POST /lists/{list_id}/jobs`, poll
+       `GET /jobs/{job_id}` until `status` is `complete`, then read the
+       summary with `GET /results/{result_id}` and download the addresses with
+       `GET /results/{result_id}/download`.
+
+    ## Authentication
+
+    Every endpoint requires an API key in the `X-API-Key` header.
+    `Authorization: Bearer am_live_...` is accepted as well. Keys start with
+    `am_live_`, belong to one account and can be revoked at any time from the
+    dashboard; an account can hold up to 10 active keys. A missing, unknown or
+    revoked key returns `401`.
+
+    Treat a key like a password: anyone holding it can spend your credits and
+    read your lists.
+
+    ## Credits
+
+    - `POST /verify` costs **1 credit** per call. The credit is charged when
+      the request is accepted and refunded automatically when the final status
+      is `unknown`.
+    - A list job costs **1 credit per address** and is charged when the job is
+      queued.
+    - Without enough credits the API returns `402` with code
+      `insufficient_credits`. Check the balance with `GET /credits` and buy
+      credits from the [dashboard](https://analyzemail.com/account/credits).
+
+    ## Real-time verification
+
+    `POST /verify` waits up to 20 seconds for the mail server. When the check
+    finishes in time the response is `200` with `state: complete`. Otherwise
+    it is `202` with `state: pending` and a `Location` header; poll
+    `GET /verify/{verification_id}` every few seconds. Pending results are
+    kept for 24 hours.
+
+    ## Rate limits
+
+    Limits apply per API key: `POST /verify` 10 requests per second and 10,000
+    per day, `GET /verify/{verification_id}` 10 per second, every other
+    endpoint 5 per second. Responses carry `X-RateLimit-Limit`,
+    `X-RateLimit-Remaining` and `X-RateLimit-Reset`; exceeding a limit returns
+    `429` with `Retry-After`.
+
+    ## Responses and errors
+
+    Successful responses wrap their payload in `data`; paginated lists add
+    `meta.pagination`. Errors return a non-2xx status and one shape:
+
+    ```
+    {"error": {"code": "not_found", "message": "List not found.", "details": null}}
+    ```
+
+    | Status | Code | Meaning |
+    |---|---|---|
+    | 400 | `bad_request` | The body is not valid JSON or not an object. |
+    | 401 | `unauthorized` | Missing, unknown or revoked API key. |
+    | 402 | `insufficient_credits` | Not enough credits for the request. |
+    | 403 | `forbidden` | The key may not perform this action. |
+    | 404 | `not_found` | No such object on your account. |
+    | 409 | `conflict` | The object is in the wrong state for the request. |
+    | 409 | `job_running` | A job is running on the list; cancel it before deleting the list. |
+    | 413 | `payload_too_large` | The uploaded file is too large. |
+    | 415 | `unsupported_media_type` | The uploaded file is not CSV or text. |
+    | 422 | `validation_error` | A field is missing or invalid; see `details`. |
+    | 429 | `rate_limited` | Too many requests; wait for `Retry-After`. |
+    | 500 | `internal_error` | Unexpected error on our side. |
+    | 503 | `unavailable` | Verification or queueing is temporarily unavailable. |
+
+    Objects that belong to another account return `404`.
+
+    ## Pagination
+
+    List endpoints accept `page` (from 1) and `per_page` (1 to 100, default
+    25) and return `meta.pagination` with `page`, `per_page`, `total` and
+    `total_pages`. Items are ordered newest first.
+  contact:
+    name: Analyzemail support
+    email: support@analyzemail.com
+    url: https://analyzemail.com/contact
+  x-logo:
+    url: https://analyzemail.com/static/images/analyzemail-v2.png
+    altText: Analyzemail
+
+servers:
+  - url: https://analyzemail.com/api/v2
+    description: Production
+
+security:
+  - ApiKeyAuth: []
+
+tags:
+  - name: Verification
+    description: Verify one address in real time. Costs 1 credit, refunded when the result is `unknown`.
+  - name: Lists
+    description: Upload, list and delete the email lists stored on your account.
+  - name: Jobs
+    description: |
+      Cleanse jobs. A job validates every address of a list asynchronously;
+      poll it until `status` is `complete`, then read its result.
+  - name: Results
+    description: |
+      Summaries and downloads of finished jobs.
+
+      Every address receives one **status** (`deliverable`, `undeliverable`,
+      `risky`, `unknown`) plus independent **flags** (disposable, role,
+      trap, litigator, protected, parked, catch-all, free provider,
+      duplicate). Flags overlap with statuses, so flag counts do not add up to
+      the total.
+  - name: Account
+    description: The account that owns the API key and its credit balance.
+  - name: Specification
+    description: This OpenAPI document in JSON.
+
+paths:
+  /verify:
+    post:
+      operationId: verifyEmail
+      summary: Verify an email address
+      description: |
+        Checks one address: syntax, domain and MX records, the mailbox over
+        SMTP, and the disposable, role, trap, litigator, protected and parked
+        detections. Costs 1 credit, refunded when the final status is
+        `unknown`.
+
+        Waits up to 20 seconds. Returns `200` when the check finished, or
+        `202` with a `Location` header to poll when it is still running.
+        Rate limit: 10 per second and 10,000 per day per key.
+      tags: [Verification]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyRequest'
+            example:
+              email: jane@example.com
+      responses:
+        '200':
+          description: The verification finished.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationResponse'
+              example:
+                data:
+                  id: 3f2b6c1e9a8d4e7fb0c5d2a1e6f9b8c7
+                  state: complete
+                  result:
+                    email: jane@example.com
+                    status: deliverable
+                    reason: accepted
+                    smtp_code: 250
+                    mx: aspmx.l.google.com
+                    provider: google
+                    is_disposable: false
+                    is_role: false
+                    is_free: false
+                    is_catchall: false
+                    is_protected: false
+                    is_trap: false
+                    is_parked: false
+                    is_litigator: false
+                    checked_at: '2026-09-26T14:03:12Z'
+        '202':
+          description: The verification is still running. Poll the `Location` URL.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationResponse'
+              example:
+                data:
+                  id: 3f2b6c1e9a8d4e7fb0c5d2a1e6f9b8c7
+                  state: pending
+                  result: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/InsufficientCredits'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /verify/{verification_id}:
+    get:
+      operationId: getVerification
+      summary: Get a verification
+      description: |
+        Returns a verification started with `POST /verify`: `200` once it has
+        finished, `202` while it is still running. Verifications are kept for
+        24 hours. Rate limit: 10 per second per key.
+      tags: [Verification]
+      parameters:
+        - $ref: '#/components/parameters/VerificationId'
+      responses:
+        '200':
+          description: The verification finished.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationResponse'
+        '202':
+          description: The verification is still running.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerificationResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /lists:
+    get:
+      operationId: listLists
+      summary: List your email lists
+      description: Returns the lists on your account, newest first. Rate limit 5 per second per key.
+      tags: [Lists]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A page of lists.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/X-RateLimit-Limit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/X-RateLimit-Remaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/X-RateLimit-Reset'
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/List'
+                  meta:
+                    $ref: '#/components/schemas/PageMeta'
+              example:
+                data:
+                  - id: 512
+                    name: newsletter.csv
+                    count: 18250
+                    source: upload
+                    last_cleansed_at: '2026-09-25T09:12:44Z'
+                    last_result_id: 877
+                meta:
+                  pagination:
+                    page: 1
+                    per_page: 25
+                    total: 1
+                    total_pages: 1
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    post:
+      operationId: createList
+      summary: Upload a list
+      description: |
+        Uploads one `.csv` or `.txt` file (multipart field `file`, up to 25 MB).
+        Every email address found in the file becomes one entry; other columns
+        are ignored. Returns the new list. Rate limit 5 per second per key.
+      tags: [Lists]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/ListUpload'
+      responses:
+        '201':
+          description: The list was created.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListResponse'
+              example:
+                data:
+                  id: 513
+                  name: signups.csv
+                  count: 1200
+                  source: upload
+                  last_cleansed_at: null
+                  last_result_id: null
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /lists/{list_id}:
+    get:
+      operationId: getList
+      summary: Get a list
+      description: Returns one of your lists. Rate limit 5 per second per key.
+      tags: [Lists]
+      parameters:
+        - $ref: '#/components/parameters/ListId'
+      responses:
+        '200':
+          description: The list.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    delete:
+      operationId: deleteList
+      summary: Delete a list
+      description: |
+        Deletes a list and everything derived from it: its uploaded file, its
+        jobs, its results and their downloadable files. This cannot be undone.
+        While a job is running on the list the request is refused with `409`
+        and code `job_running`; cancel the job first. Rate limit 5 per second
+        per key.
+      tags: [Lists]
+      parameters:
+        - $ref: '#/components/parameters/ListId'
+      responses:
+        '204':
+          description: The list was deleted.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/JobRunning'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /lists/{list_id}/jobs:
+    post:
+      operationId: createJob
+      summary: Start a cleanse job
+      description: |
+        Queues a cleanse of the list and charges 1 credit per address. Every
+        detection is on unless you turn it off in `settings`. Rate limit 5 per
+        second per key.
+      tags: [Jobs]
+      parameters:
+        - $ref: '#/components/parameters/ListId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JobRequest'
+            example:
+              settings:
+                role_based: false
+      responses:
+        '201':
+          description: The job was queued.
+          headers:
+            Location:
+              $ref: '#/components/headers/Location'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+              example:
+                data:
+                  id: 9051
+                  list_id: 513
+                  status: running
+                  percent: 0
+                  result_id: null
+                  created_at: '2026-09-26T14:05:00Z'
+                  started_at: '2026-09-26T14:05:00Z'
+                  finished_at: null
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '402':
+          $ref: '#/components/responses/InsufficientCredits'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '503':
+          $ref: '#/components/responses/Unavailable'
+
+  /jobs:
+    get:
+      operationId: listJobs
+      summary: List your jobs
+      description: Returns your cleanse jobs, newest first, with live progress. Rate limit 5 per second per key.
+      tags: [Jobs]
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/PerPage'
+      responses:
+        '200':
+          description: A page of jobs.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [data, meta]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Job'
+                  meta:
+                    $ref: '#/components/schemas/PageMeta'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /jobs/{job_id}:
+    get:
+      operationId: getJob
+      summary: Get a job
+      description: |
+        Returns one job with its progress. Poll every few seconds until
+        `status` is `complete` (then `result_id` is set), `failed` or
+        `cancelled`. Rate limit 5 per second per key.
+      tags: [Jobs]
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: The job.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+              example:
+                data:
+                  id: 9051
+                  list_id: 513
+                  status: complete
+                  percent: 100
+                  result_id: 878
+                  created_at: '2026-09-26T14:05:00Z'
+                  started_at: '2026-09-26T14:05:00Z'
+                  finished_at: '2026-09-26T14:21:37Z'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /jobs/{job_id}/cancel:
+    post:
+      operationId: cancelJob
+      summary: Cancel a job
+      description: |
+        Stops a queued or running job. Credits already charged are not
+        refunded. A finished job returns `409`. Rate limit 5 per second per
+        key.
+      tags: [Jobs]
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: The job was cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /results/{result_id}:
+    get:
+      operationId: getResult
+      summary: Get a result summary
+      description: Returns outcome and flag counts for a finished job. Rate limit 5 per second per key.
+      tags: [Results]
+      parameters:
+        - $ref: '#/components/parameters/ResultId'
+      responses:
+        '200':
+          description: The result summary.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ResultResponse'
+              example:
+                data:
+                  id: 878
+                  list_id: 513
+                  job_id: 9051
+                  created_at: '2026-09-26T14:21:37Z'
+                  total: 1200
+                  outcomes:
+                    deliverable: 1010
+                    undeliverable: 96
+                    risky: 71
+                    unknown: 23
+                  flags:
+                    role: 38
+                    free: 612
+                    disposable: 9
+                    catch_all: 44
+                    trap: 1
+                    protected: 17
+                    parked: 3
+                    litigator: 0
+                    duplicate: 12
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /results/{result_id}/download:
+    get:
+      operationId: downloadResult
+      summary: Download result addresses
+      description: |
+        Returns a ZIP file containing `analytics.csv` with one row per
+        address: `email`, `result`, `reason`, `smtp_code`, `domain`, `mx`,
+        `provider` and one true/false column per category. Without
+        `categories` every address is included; with it, only addresses in
+        at least one of the categories. Rate limit 5 per second per key.
+      tags: [Results]
+      parameters:
+        - $ref: '#/components/parameters/ResultId'
+        - $ref: '#/components/parameters/Categories'
+      responses:
+        '200':
+          description: The ZIP file.
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /account:
+    get:
+      operationId: getAccount
+      summary: Get your account
+      description: Returns the account that owns the API key. Rate limit 5 per second per key.
+      tags: [Account]
+      responses:
+        '200':
+          description: The account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountResponse'
+              example:
+                data:
+                  email: jane@example.com
+                  name: Jane Doe
+                  credits: 48210
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /credits:
+    get:
+      operationId: getCredits
+      summary: Get your credit balance
+      description: Returns the number of credits left on your account. Rate limit 5 per second per key.
+      tags: [Account]
+      responses:
+        '200':
+          description: The balance.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreditsResponse'
+              example:
+                data:
+                  balance: 48210
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+  /openapi.json:
+    get:
+      operationId: getOpenApiSpec
+      summary: Get this specification
+      description: Returns this OpenAPI document as JSON. No API key is needed. Rate limit 5 per second per IP address.
+      tags: [Specification]
+      security: []
+      responses:
+        '200':
+          description: The OpenAPI document.
+          content:
+            application/json:
+              schema:
+                type: object
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: |
+        An API key created in the dashboard under Settings > API, for example
+        `am_live_mfrggzdfmztwq2lknnwg23tpobyxe43uov3ho6dzpjqwc3dfme`.
+
+  headers:
+    Location:
+      description: Path of the created or pending resource.
+      schema:
+        type: string
+    X-RateLimit-Limit:
+      description: Requests allowed in the current window.
+      schema:
+        type: integer
+    X-RateLimit-Remaining:
+      description: Requests left in the current window.
+      schema:
+        type: integer
+    X-RateLimit-Reset:
+      description: Unix time when the current window resets.
+      schema:
+        type: integer
+    Retry-After:
+      description: Seconds to wait before retrying.
+      schema:
+        type: integer
+
+  parameters:
+    VerificationId:
+      name: verification_id
+      in: path
+      required: true
+      description: The `id` returned by `POST /verify`.
+      schema:
+        type: string
+    ListId:
+      name: list_id
+      in: path
+      required: true
+      description: The list id.
+      schema:
+        type: integer
+    JobId:
+      name: job_id
+      in: path
+      required: true
+      description: The job id.
+      schema:
+        type: integer
+    ResultId:
+      name: result_id
+      in: path
+      required: true
+      description: The result id (`result_id` of a finished job).
+      schema:
+        type: integer
+    Page:
+      name: page
+      in: query
+      required: false
+      description: Page number, starting at 1.
+      schema:
+        type: integer
+        minimum: 1
+        default: 1
+    PerPage:
+      name: per_page
+      in: query
+      required: false
+      description: Items per page.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 25
+    Categories:
+      name: categories
+      in: query
+      required: false
+      description: |
+        Comma-separated categories to include: `verified`, `undeliverable`,
+        `risky`, `unknown`, `disposable`, `role`, `protected`, `trap`,
+        `parked`, `litigator`, `catch_all`, `free`.
+      schema:
+        type: string
+      example: verified,risky
+
+  responses:
+    BadRequest:
+      description: The request body is not a JSON object.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: bad_request
+              message: The request body must be a JSON object.
+              details: null
+    Unauthorized:
+      description: The API key is missing, unknown or revoked.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: unauthorized
+              message: Missing, invalid or revoked API key. Send your key in the X-API-Key header.
+              details: null
+    InsufficientCredits:
+      description: Not enough credits.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: insufficient_credits
+              message: Not enough credits. Buy credits to verify addresses.
+              details: null
+    NotFound:
+      description: No such object on your account.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: not_found
+              message: List not found.
+              details: null
+    Conflict:
+      description: The object is in the wrong state for this request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: conflict
+              message: This list already has a job queued or running.
+              details: null
+    JobRunning:
+      description: A job is running on the list. Cancel it with `POST /jobs/{job_id}/cancel` first.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: job_running
+              message: A job is running on this list. Cancel it before deleting the list.
+              details: null
+    PayloadTooLarge:
+      description: The uploaded file is too large.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: payload_too_large
+              message: The file is larger than 25 MB.
+              details: null
+    UnsupportedMediaType:
+      description: The uploaded file is not CSV or plain text.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: unsupported_media_type
+              message: Upload a .csv or .txt file (Invalid mimetype application/pdf).
+              details: null
+    ValidationError:
+      description: A field is missing or invalid.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: validation_error
+              message: email is required.
+              details:
+                field: email
+                issue: required
+    TooManyRequests:
+      description: Rate limit exceeded. Wait for `Retry-After` seconds before retrying.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/Retry-After'
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/X-RateLimit-Limit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/X-RateLimit-Remaining'
+        X-RateLimit-Reset:
+          $ref: '#/components/headers/X-RateLimit-Reset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: rate_limited
+              message: Rate limit exceeded (10 per 1 second). Retry after the reset time.
+              details: null
+    Unavailable:
+      description: Verification or queueing is temporarily unavailable. Retry later.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: unavailable
+              message: Verification is temporarily unavailable.
+              details: null
+
+  schemas:
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required: [code, message, details]
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code.
+              enum:
+                - bad_request
+                - unauthorized
+                - insufficient_credits
+                - forbidden
+                - not_found
+                - method_not_allowed
+                - conflict
+                - job_running
+                - payload_too_large
+                - unsupported_media_type
+                - validation_error
+                - rate_limited
+                - internal_error
+                - unavailable
+            message:
+              type: string
+              description: Human-readable explanation.
+            details:
+              description: Extra information, such as the invalid field. `null` when there is none.
+              type: [object, 'null']
+
+    PageMeta:
+      type: object
+      additionalProperties: false
+      required: [pagination]
+      properties:
+        pagination:
+          type: object
+          additionalProperties: false
+          required: [page, per_page, total, total_pages]
+          properties:
+            page:
+              type: integer
+            per_page:
+              type: integer
+            total:
+              type: integer
+              description: Number of items across all pages.
+            total_pages:
+              type: integer
+
+    VerifyRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+          maxLength: 320
+          description: The address to verify.
+
+    VerificationResult:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - status
+        - reason
+        - smtp_code
+        - mx
+        - provider
+        - is_disposable
+        - is_role
+        - is_free
+        - is_catchall
+        - is_protected
+        - is_trap
+        - is_parked
+        - is_litigator
+        - checked_at
+      properties:
+        email:
+          type: string
+        status:
+          type: string
+          enum: [deliverable, undeliverable, risky, unknown]
+          description: |
+            `deliverable`: the mailbox exists. `undeliverable`: it does not,
+            or the domain cannot receive mail. `risky`: it may exist but
+            carries a risk (catch-all, role, disposable, protected...).
+            `unknown`: the mail server gave no answer; the credit is refunded.
+        reason:
+          type: [string, 'null']
+          description: Short machine-readable reason for the status.
+        smtp_code:
+          type: [integer, 'null']
+          description: SMTP reply code of the mailbox check, when one was made.
+        mx:
+          type: [string, 'null']
+          description: The mail exchanger that was checked.
+        provider:
+          type: [string, 'null']
+          description: Mailbox provider detected from the MX, such as `google` or `microsoft`.
+        is_disposable:
+          type: boolean
+        is_role:
+          type: boolean
+        is_free:
+          type: boolean
+          description: A free consumer provider such as Gmail or Yahoo.
+        is_catchall:
+          type: boolean
+          description: The domain accepts every address.
+        is_protected:
+          type: boolean
+          description: The domain is behind a security gateway that hides mailbox status.
+        is_trap:
+          type: boolean
+        is_parked:
+          type: boolean
+        is_litigator:
+          type: boolean
+        checked_at:
+          type: [string, 'null']
+          format: date-time
+
+    Verification:
+      type: object
+      additionalProperties: false
+      required: [id, state, result]
+      properties:
+        id:
+          type: string
+          description: Verification id, usable with `GET /verify/{verification_id}` for 24 hours.
+        state:
+          type: string
+          enum: [complete, pending]
+        result:
+          description: The result once `state` is `complete`, otherwise `null`.
+          oneOf:
+            - $ref: '#/components/schemas/VerificationResult'
+            - type: 'null'
+
+    VerificationResponse:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Verification'
+
+    ListUpload:
+      type: object
+      required: [file]
+      properties:
+        file:
+          type: string
+          format: binary
+          description: A `.csv` or `.txt` file of at most 25 MB.
+
+    List:
+      type: object
+      additionalProperties: false
+      required: [id, name, count, source, last_cleansed_at, last_result_id]
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+          description: Stored file name. A suffix is added when the name is already taken.
+        count:
+          type: integer
+          description: Number of addresses found in the file.
+        source:
+          type: string
+          enum: [upload, mailchimp, constantcontact, salesforce]
+        last_cleansed_at:
+          type: [string, 'null']
+          format: date-time
+        last_result_id:
+          type: [integer, 'null']
+          description: The most recent result of this list.
+
+    ListResponse:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/List'
+
+    JobSettings:
+      type: object
+      additionalProperties: false
+      description: Detection options. Omitted options are on.
+      properties:
+        deduplication:
+          type: boolean
+          default: true
+          description: Flag repeated addresses as duplicates.
+        role_based:
+          type: boolean
+          default: true
+          description: Flag role accounts such as `admin@`, `info@` and `sales@`.
+        trap_detection:
+          type: boolean
+          default: true
+          description: Flag known spam-trap domains and MX patterns.
+        litigators:
+          type: boolean
+          default: true
+          description: Flag domains associated with serial TCPA/CAN-SPAM litigants.
+        disposable:
+          type: boolean
+          default: true
+          description: Flag disposable and temporary-inbox domains.
+        mailbox_user:
+          type: boolean
+          default: true
+          description: Run the SMTP mailbox check.
+        protected:
+          type: boolean
+          default: true
+          description: Flag domains behind security gateways (Proofpoint, Mimecast, Barracuda and similar).
+        parked:
+          type: boolean
+          default: true
+          description: Flag domains on parking nameservers.
+
+    JobRequest:
+      type: object
+      properties:
+        settings:
+          $ref: '#/components/schemas/JobSettings'
+
+    Job:
+      type: object
+      additionalProperties: false
+      required: [id, list_id, status, percent, result_id, created_at, started_at, finished_at]
+      properties:
+        id:
+          type: integer
+        list_id:
+          type: [integer, 'null']
+        status:
+          type: string
+          enum: [queued, running, complete, cancelled, failed]
+        percent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        result_id:
+          type: [integer, 'null']
+          description: Set once the job is complete.
+        created_at:
+          type: [string, 'null']
+          format: date-time
+        started_at:
+          type: [string, 'null']
+          format: date-time
+        finished_at:
+          type: [string, 'null']
+          format: date-time
+
+    JobResponse:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Job'
+
+    Result:
+      type: object
+      additionalProperties: false
+      required: [id, list_id, job_id, created_at, total, outcomes, flags]
+      properties:
+        id:
+          type: integer
+        list_id:
+          type: [integer, 'null']
+        job_id:
+          type: [integer, 'null']
+        created_at:
+          type: [string, 'null']
+          format: date-time
+        total:
+          type: integer
+          description: Number of addresses with a result.
+        outcomes:
+          type: object
+          additionalProperties: false
+          description: Addresses per status; these add up to `total`.
+          required: [deliverable, undeliverable, risky, unknown]
+          properties:
+            deliverable:
+              type: integer
+            undeliverable:
+              type: integer
+            risky:
+              type: integer
+            unknown:
+              type: integer
+        flags:
+          type: object
+          additionalProperties: false
+          description: Addresses per flag. An address can carry several flags.
+          required: [role, free, disposable, catch_all, trap, protected, parked, litigator, duplicate]
+          properties:
+            role:
+              type: integer
+            free:
+              type: integer
+            disposable:
+              type: integer
+            catch_all:
+              type: integer
+            trap:
+              type: integer
+            protected:
+              type: integer
+            parked:
+              type: integer
+            litigator:
+              type: integer
+            duplicate:
+              type: integer
+
+    ResultResponse:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Result'
+
+    Account:
+      type: object
+      additionalProperties: false
+      required: [email, name, credits]
+      properties:
+        email:
+          type: string
+        name:
+          type: [string, 'null']
+        credits:
+          type: integer
+          description: Credits left.
+
+    AccountResponse:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          $ref: '#/components/schemas/Account'
+
+    CreditsResponse:
+      type: object
+      additionalProperties: false
+      required: [data]
+      properties:
+        data:
+          type: object
+          additionalProperties: false
+          required: [balance]
+          properties:
+            balance:
+              type: integer

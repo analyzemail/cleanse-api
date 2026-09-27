@@ -1,0 +1,16 @@
+apis:
+  main:
+    root: openapi/openapi.yaml
+
+extends:
+  - recommended
+
+rules:
+  operation-operationId: error
+  operation-summary: error
+  operation-description: warn
+  operation-4xx-response: warn
+  no-unused-components: error
+  tag-description: error
+  info-license: off
+  security-defined: error
