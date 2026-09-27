@@ -6,9 +6,9 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/michaelwalkerfl/cleanse-api.git"
+    "url": "git+https://github.com/analyzemail/cleanse-api.git"
   },
-  "homepage": "https://michaelwalkerfl.github.io/cleanse-api/",
+  "homepage": "https://documentation.analyzemail.com/",
   "engines": {
     "node": ">=20"
   },

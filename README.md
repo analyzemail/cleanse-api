@@ -19,7 +19,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/michaelwalkerfl/cleanse-api/actions/workflows/docs.yml"><img src="https://github.com/michaelwalkerfl/cleanse-api/actions/workflows/docs.yml/badge.svg" alt="Docs build"></a>
+  <a href="https://github.com/analyzemail/cleanse-api/actions/workflows/docs.yml"><img src="https://github.com/analyzemail/cleanse-api/actions/workflows/docs.yml/badge.svg" alt="Docs build"></a>
   <img src="https://img.shields.io/badge/OpenAPI-3.1-2fffa6?labelColor=2d2735" alt="OpenAPI 3.1">
   <img src="https://img.shields.io/badge/API-v2.0.0-cb02e0?labelColor=2d2735" alt="API v2.0.0">
 </p>
