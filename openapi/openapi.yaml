@@ -46,6 +46,10 @@ info:
       is `unknown`.
     - A list job costs **1 credit per address** and is charged when the job is
       queued.
+    - Accounts with a confirmed email get **250 free credits** each calendar
+      month (UTC), reset at 00:00 UTC on the 1st with no rollover. Free credits
+      are spent before bought credits, a refund returns the credit to the
+      bucket it came from, and `GET /credits` includes them in `balance`.
     - Without enough credits the API returns `402` with code
       `insufficient_credits`. Check the balance with `GET /credits` and buy
       credits from the [dashboard](https://analyzemail.com/account/credits).
@@ -61,7 +65,8 @@ info:
     ## Rate limits
 
     Limits apply per API key: `POST /verify` 10 requests per second and 10,000
-    per day, `GET /verify/{verification_id}` 10 per second, every other
+    per day (2 per second and 500 per day until the account has bought
+    credits), `GET /verify/{verification_id}` 10 per second, every other
     endpoint 5 per second. Responses carry `X-RateLimit-Limit`,
     `X-RateLimit-Remaining` and `X-RateLimit-Reset`; exceeding a limit returns
     `429` with `Retry-After`.
@@ -149,7 +154,8 @@ paths:
 
         Waits up to 20 seconds. Returns `200` when the check finished, or
         `202` with a `Location` header to poll when it is still running.
-        Rate limit: 10 per second and 10,000 per day per key.
+        Rate limit: 10 per second and 10,000 per day per key; 2 per second
+        and 500 per day for accounts that have never bought credits.
       tags: [Verification]
       requestBody:
         required: true
@@ -662,7 +668,10 @@ paths:
     get:
       operationId: getCredits
       summary: Get your credit balance
-      description: Returns the number of credits left on your account. Rate limit 5 per second per key.
+      description: >-
+        Returns the number of credits you can spend now. `balance` includes
+        the free monthly credits left (`free_balance`), which refill at
+        `free_resets_at`. Rate limit 5 per second per key.
       tags: [Account]
       responses:
         '200':
@@ -674,6 +683,8 @@ paths:
               example:
                 data:
                   balance: 48210
+                  free_balance: 210
+                  free_resets_at: '2026-10-01T00:00:00Z'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '429':
@@ -1273,7 +1284,7 @@ components:
           type: [string, 'null']
         credits:
           type: integer
-          description: Credits left.
+          description: Credits you can spend now, free credits included.
 
     AccountResponse:
       type: object
@@ -1291,7 +1302,17 @@ components:
         data:
           type: object
           additionalProperties: false
-          required: [balance]
+          required: [balance, free_balance, free_resets_at]
           properties:
             balance:
               type: integer
+              description: Credits you can spend now, free credits included.
+            free_balance:
+              type: integer
+              description: Free monthly credits left, spent before bought credits.
+            free_resets_at:
+              type: [string, 'null']
+              format: date-time
+              description: >-
+                When the free credits refill (00:00 UTC on the 1st of next
+                month); null when the account gets none (email not confirmed).
