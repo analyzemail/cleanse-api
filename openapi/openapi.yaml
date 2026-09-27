@@ -65,9 +65,9 @@ info:
     ## Rate limits
 
     Limits apply per API key: `POST /verify` 10 requests per second and 10,000
-    per day (2 per second and 500 per day until the account has bought
-    credits), `GET /verify/{verification_id}` 10 per second, every other
-    endpoint 5 per second. Responses carry `X-RateLimit-Limit`,
+    per day (until the account has bought credits: 2 per second and 500 per
+    day shared by all of its keys), `GET /verify/{verification_id}` 10 per
+    second, every other endpoint 5 per second. Responses carry `X-RateLimit-Limit`,
     `X-RateLimit-Remaining` and `X-RateLimit-Reset`; exceeding a limit returns
     `429` with `Retry-After`.
 
@@ -155,7 +155,8 @@ paths:
         Waits up to 20 seconds. Returns `200` when the check finished, or
         `202` with a `Location` header to poll when it is still running.
         Rate limit: 10 per second and 10,000 per day per key; 2 per second
-        and 500 per day for accounts that have never bought credits.
+        and 500 per day per account (all keys combined) for accounts that
+        have never bought credits.
       tags: [Verification]
       requestBody:
         required: true
